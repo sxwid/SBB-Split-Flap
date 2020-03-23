@@ -330,14 +330,13 @@ void state_error(int error){
   // Cheap "watch", increment 
   if ((millis() - lasttick_m) > 1000){
     t_seconds += 1;
-    // Secondly update Temperature
-    sf_settemp();
     if (t_seconds > 59) {
       t_seconds = 0;
       t_minutes += 1;
       // Check for new sync DCF every Minute
       sync_dcf();
-      
+      // Minutely update Temperature
+      sf_settemp();
       if (t_minutes > 59) {
         t_minutes = 0;
         t_hours += 1;
