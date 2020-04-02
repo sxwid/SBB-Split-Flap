@@ -44,14 +44,15 @@ keine Buttons
 // Variables
 //##########################################################################
 
-const byte addr_h = 6;      // Adress Modul Hours
-const byte addr_m = 7;      // Adress Modul Minutes
-const byte addr_stat = 11;  // Adress Modul Stations
-const byte addr_delay = 8;  // Adress Modul Delay
+const byte  addr_h = 6;      // Adress Modul Hours
+const byte  addr_m = 7;      // Adress Modul Minutes
+const byte  addr_stat = 11;  // Adress Modul Stations
+const byte  addr_delay = 8;  // Adress Modul Delay
 
-int        POT_FUN  = A3;   // Delay between random interventions
+int         POT_FUN  = A3;   // Delay between random interventions
 
-const int TH_LIGHT = 30; //Threshold light in lux
+const int   TH_LIGHT = 30; //Threshold light in lux
+bool        TH_L_LOW = true; // Variable for Threshold light
 
 DCF77 DCF = DCF77(DCF_PIN,DCF_INTERRUPT);
 
@@ -70,8 +71,8 @@ byte stat_blank[] = {0,30,32,34,36,41,42,43,45,46,47,48,49,50,51,52,53,54,55,56,
 
 unsigned long lasttick_m = 0; //last time second added
 unsigned long lastsync = 0; //last time DCF sync happened
-unsigned long lastRandom1 = 0; //last time sync happened
-unsigned long presetRandom1 = 12000; //Preset 2 Minutes
+unsigned long lastRandom1 = 0; //last time new station appeared
+unsigned long presetRandom1 = 0; //
 
 // Error Handling
 auto led = JLed(LED_ERROR).Off().Forever();
@@ -92,7 +93,7 @@ void configureSensor(void)
 int lux_getlight(){
   sensors_event_t event;
   tsl.getEvent(&event);
-  return (int)event.light;
+  return event.light;
 }
 
 // Get time from RTC to local buffer
@@ -106,6 +107,7 @@ void rtc_gettime(){
 //Initialize Timers for random interventions
 void init_timers(){
   lastRandom1 = millis();
+  presetRandom1 = 1000L+80000L*analogRead(POT_FUN);
 }
 
  
@@ -141,7 +143,8 @@ void checkrandom1(){
     lastRandom1 = millis();
 
     //Generate new interval, potentiometer is multiplier
-    presetRandom1 = 1000L+1000L*analogRead(POT_FUN);   
+    // Maximum 22.7h, minimum every Second.
+    presetRandom1 = 1000L+80000L*analogRead(POT_FUN);   
   }
 }
 
@@ -154,17 +157,11 @@ void sf_noshow(){
 }
 
 //Set Display by RS485 Message
-void sf_setpos(){
+void sf_settime(){
   if(t_minutes<=30) blade_m=t_minutes+30;
   else blade_m=t_minutes-31;
-  if (lux_getlight()>TH_LIGHT){
-    setpos(addr_m, blade_m);
-    setpos(addr_h, t_hours);
-  }
-  else{
-    setpos(addr_m, 29);
-    setpos(addr_h, 24);
-  }
+  setpos(addr_m, blade_m);
+  setpos(addr_h, t_hours);
 }
 
 void sf_setdest(){
@@ -181,17 +178,10 @@ void sf_setdest(){
       }
     } 
   }while(result == false);
-  
-  if (lux_getlight()>TH_LIGHT){
   setpos(addr_stat, pos);
-  }
-  else{
-    setpos(addr_stat, 0);
-  }
 }
 
 void sf_settemp(){
-  if (lux_getlight()>TH_LIGHT){
     float temperature = sensor.readTemperature();
     int temp = round(temperature);
 
@@ -215,10 +205,6 @@ void sf_settemp(){
     else{    
       setpos(addr_delay, 40);      
     }
-  }
-  else{
-    setpos(addr_delay, 0);
-  }
 }
 
 void setpos(byte address, byte pos){
@@ -232,6 +218,7 @@ void setpos(byte address, byte pos){
   RS485.write(pos);
   RS485.endTransmission();
   RS485.end();
+  //delay(500);
 }
 
 void state_error(int error){
@@ -279,7 +266,8 @@ void state_error(int error){
   
   DCF.Start();
   sf_noshow();
-
+  delay(2000);
+  
   // Init RTC
   if (!rtc.begin()){
     state_error(ERR_RTC);
@@ -308,13 +296,11 @@ void state_error(int error){
   }
   
   randomSeed(analogRead(1));
-  init_timers();
 
   //Read Time from RTC to local buffer and set initial flap Position
   rtc_gettime();
-  sf_setpos();
-  sf_setdest();
-  sf_settemp();
+
+  lasttick_m = millis();
 }
 
 
@@ -323,20 +309,24 @@ void state_error(int error){
 //##########################################################################
 
  void loop() {
-  led.Update();
-  checksync();
-  checkrandom1();
-  
-  // Cheap "watch", increment 
-  if ((millis() - lasttick_m) > 1000){
+
+  // Check Lighting every second (cheap "watch" increment)
+  if(lux_getlight()>TH_LIGHT && (millis() - lasttick_m) > 1000){
+    // If old state was lowlight, reinit Timers
+    if(TH_L_LOW == true){
+      init_timers();
+      sf_settime();
+      sf_settemp();
+      sf_setdest();
+    }
+    TH_L_LOW = false;
+
     t_seconds += 1;
     if (t_seconds > 59) {
       t_seconds = 0;
       t_minutes += 1;
       // Check for new sync DCF every Minute
       sync_dcf();
-      // Minutely update Temperature
-      sf_settemp();
       if (t_minutes > 59) {
         t_minutes = 0;
         t_hours += 1;
@@ -346,9 +336,18 @@ void state_error(int error){
           t_hours = 0;
         }
       }
-      // Adjust flaps every Minute
-      sf_setpos();
+      sf_settime();
+      sf_settemp();
     }
     lasttick_m = millis();
   }
+  
+  if(lux_getlight()<TH_LIGHT && TH_L_LOW == false && (millis() - lasttick_m) > 1000){
+    sf_noshow();
+    TH_L_LOW = true;
+  }
+
+  led.Update();
+  checksync();
+  checkrandom1();
 }
