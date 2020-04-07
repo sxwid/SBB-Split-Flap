@@ -52,7 +52,10 @@ const byte  addr_delay = 8;  // Adress Modul Delay
 int         POT_FUN  = A3;   // Delay between random interventions
 
 const int   TH_LIGHT = 30; //Threshold light in lux
+const int   HYST_LIGHT = 1; //Hysterese for Light Threshold
 bool        TH_L_LOW = true; // Variable for Threshold light
+const int   FILTER_LENGTH = 60; // Length of SMA-Filter
+float       temp_filtered = 20.0;
 
 DCF77 DCF = DCF77(DCF_PIN,DCF_INTERRUPT);
 
@@ -183,7 +186,8 @@ void sf_setdest(){
 
 void sf_settemp(){
     float temperature = sensor.readTemperature();
-    int temp = round(temperature);
+    sma_filter(temp_filtered, temperature, FILTER_LENGTH);
+    int temp = round(temp_filtered);
 
     // Values of flap are 1-20 (flap 1-20),25 (21), 30 (22), 35 (23) etc.
     int pos = temp - 10;
@@ -252,6 +256,11 @@ void state_error(int error){
   }
 }
 
+// Nachbildung eines RC-Tiefpass FF = Filterfaktor;  Tau = FF / Aufruffrequenz            
+void sma_filter(float &FiltVal, float NewVal, int FF){
+  FiltVal= ((FiltVal * (FF - 1)) + NewVal) / ( FF ) ; 
+}
+
 //##########################################################################
 // Setup
 //##########################################################################
@@ -262,7 +271,8 @@ void state_error(int error){
   digitalWrite(DE_PIN, LOW);
   digitalWrite(RE_PIN, HIGH);
 
-  //Serial.begin(115200);
+//  Serial.begin(115200);
+//  Serial.println("Start Serial");
   
   DCF.Start();
   sf_noshow();
@@ -311,7 +321,7 @@ void state_error(int error){
  void loop() {
 
   // Check Lighting every second (cheap "watch" increment)
-  if(lux_getlight()>TH_LIGHT && (millis() - lasttick_m) > 1000){
+  if(lux_getlight()>(TH_LIGHT+HYST_LIGHT) && (millis() - lasttick_m) > 1000){
     // If old state was lowlight, reinit Timers
     if(TH_L_LOW == true){
       init_timers();
@@ -322,6 +332,7 @@ void state_error(int error){
     TH_L_LOW = false;
 
     t_seconds += 1;
+    sf_settemp();
     if (t_seconds > 59) {
       t_seconds = 0;
       t_minutes += 1;
@@ -337,12 +348,12 @@ void state_error(int error){
         }
       }
       sf_settime();
-      sf_settemp();
+      
     }
     lasttick_m = millis();
   }
   
-  if(lux_getlight()<TH_LIGHT && TH_L_LOW == false && (millis() - lasttick_m) > 1000){
+  if(lux_getlight()<(TH_LIGHT-HYST_LIGHT) && TH_L_LOW == false && (millis() - lasttick_m) > 1000){
     sf_noshow();
     TH_L_LOW = true;
   }
